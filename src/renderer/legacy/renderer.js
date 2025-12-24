@@ -37,7 +37,8 @@ const modelNameInput = document.getElementById('modelNameInput');
 const modelProviderSelect = document.getElementById('modelProviderSelect');
 const modelApiKeyInput = document.getElementById('modelApiKeyInput');
 const modelBaseUrlInput = document.getElementById('modelBaseUrlInput');
-const modelModelNameInput = document.getElementById('modelModelNameInput');
+const modelModelNameInput = document.getElementById('modelModelNameSelect');
+const btnModelRefresh = document.getElementById('btnModelRefresh');
 const modelProxyEnabledInput = document.getElementById('modelProxyEnabled');
 const modelProxyPortInput = document.getElementById('modelProxyPort');
 
@@ -78,6 +79,7 @@ const I18N = {
     helpItemPrivacy: 'No uploads. Rules and parsing stay on your device.',
     helpClose: 'Close',
     modelButton: 'Models',
+    modelRefresh: 'Refresh',
     modelHeader: 'Model Settings',
     modelListLabel: 'Configurations',
     modelAdd: 'New',
@@ -176,6 +178,7 @@ const I18N = {
     helpItemPrivacy: '不上传内容；规则与解析全部本地执行。',
     helpClose: '关闭',
     modelButton: '模型',
+    modelRefresh: '刷新',
     modelHeader: '模型配置',
     modelListLabel: '配置列表',
     modelAdd: '新建',
@@ -287,6 +290,7 @@ const PROVIDERS = {
 
 let modelConfigs = [];
 let selectedModelId = null;
+let modelOptionsCache = {};
 
 function formatTemplate(template, vars) {
   return template.replace(/\{(\w+)\}/g, (_, key) => {
@@ -345,6 +349,89 @@ function getDefaultBaseUrl(providerId) {
     return def.defaultBaseUrl;
   }
   return PROVIDERS.custom.defaultBaseUrl;
+}
+
+function setModelSelectOptions(select, models) {
+  const current = select.value || '';
+  while (select.firstChild) {
+    select.removeChild(select.firstChild);
+  }
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = currentLang === 'zh' ? '请选择模型' : 'Select a model';
+  select.appendChild(placeholder);
+
+  (models || []).forEach((m) => {
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = m;
+    select.appendChild(opt);
+  });
+
+  if (current && (models || []).includes(current)) {
+    select.value = current;
+  }
+}
+
+function getModelFetchParamsFromForm() {
+  const providerId = modelProviderSelect.value || 'openai';
+  let baseUrl = modelBaseUrlInput.value.trim();
+  if (!baseUrl) {
+    baseUrl = getDefaultBaseUrl(providerId);
+    modelBaseUrlInput.value = baseUrl;
+  }
+  const apiKey = modelApiKeyInput.value.trim();
+  const proxyEnabled = Boolean(modelProxyEnabledInput.checked);
+  const proxyPort = modelProxyPortInput.value.trim();
+  return { providerId, baseUrl, apiKey, proxyEnabled, proxyPort };
+}
+
+async function refreshModelsForCurrentForm() {
+  if (!modelModal || modelModal.classList.contains('hidden')) {
+    return;
+  }
+  const params = getModelFetchParamsFromForm();
+  const providerId = String(params.providerId || 'openai');
+  const baseUrl = String(params.baseUrl || '').trim();
+  const apiKey = String(params.apiKey || '').trim();
+  const proxyEnabled = Boolean(params.proxyEnabled);
+  const proxyPort = String(params.proxyPort || '').trim();
+
+  const cacheKey = `${providerId}::${baseUrl}::${apiKey ? 1 : 0}::${proxyEnabled ? 1 : 0}::${proxyPort}`;
+
+  if (modelOptionsCache[cacheKey]) {
+    setModelSelectOptions(modelModelNameInput, modelOptionsCache[cacheKey]);
+    return;
+  }
+
+  if (!window.builder || typeof window.builder.listModels !== 'function') {
+    setModelSelectOptions(modelModelNameInput, []);
+    return;
+  }
+
+  btnModelRefresh.disabled = true;
+  const prevText = btnModelRefresh.textContent;
+  btnModelRefresh.textContent = currentLang === 'zh' ? '刷新中...' : 'Loading...';
+  try {
+    const resp = await window.builder.listModels({
+      providerId,
+      baseUrl,
+      apiKey,
+      proxyEnabled,
+      proxyPort,
+    });
+
+    if (!resp || !resp.ok) {
+      setModelSelectOptions(modelModelNameInput, []);
+      return;
+    }
+    const models = Array.isArray(resp.models) ? resp.models : [];
+    modelOptionsCache[cacheKey] = models;
+    setModelSelectOptions(modelModelNameInput, models);
+  } finally {
+    btnModelRefresh.disabled = false;
+    btnModelRefresh.textContent = prevText;
+  }
 }
 
 function loadModelState() {
@@ -461,14 +548,16 @@ function applyModelForm() {
   modelApiKeyInput.value = config.apiKey || '';
   modelBaseUrlInput.value = config.baseUrl || '';
   modelModelNameInput.value = config.modelName || '';
-   modelProxyEnabledInput.checked = Boolean(config.proxyEnabled);
-   modelProxyPortInput.value = config.proxyPort || '';
+  modelProxyEnabledInput.checked = Boolean(config.proxyEnabled);
+  modelProxyPortInput.value = config.proxyPort || '';
+  refreshModelsForCurrentForm();
 }
 
 function openModelModal() {
   modelModal.classList.remove('hidden');
   applyModelForm();
   renderModelList();
+  refreshModelsForCurrentForm();
 }
 
 function closeModelModal() {
@@ -505,6 +594,24 @@ function clearNode(node) {
   }
 }
 
+function splitLlmJsonAndRest(raw) {
+  const text = String(raw || '').trim();
+  if (!text) {
+    return null;
+  }
+  const lines = text.split(/\r?\n/);
+  let jsonText = '';
+  for (let i = 0; i < lines.length; i++) {
+    jsonText += (i > 0 ? '\n' : '') + lines[i];
+    try {
+      const parsed = JSON.parse(jsonText);
+      const rest = lines.slice(i + 1).join('\n').trim();
+      return { json: parsed, rest };
+    } catch (e) {}
+  }
+  return null;
+}
+
 function renderWarnings(list) {
   const dict = I18N[currentLang];
   if (!list.length) {
@@ -515,7 +622,187 @@ function renderWarnings(list) {
 }
 
 function renderLlmText(text) {
-  llmOutput.textContent = text || '';
+  clearNode(llmOutput);
+  const raw = String(text || '').trim();
+  if (!raw) {
+    return;
+  }
+  const parsed = splitLlmJsonAndRest(raw);
+  if (!parsed) {
+    const card = document.createElement('div');
+    card.className = 'llm-card';
+    const header = document.createElement('div');
+    header.className = 'llm-card-header';
+    header.textContent = currentLang === 'zh' ? '模型输出' : 'Model output';
+    const pre = document.createElement('pre');
+    pre.className = 'llm-pre';
+    pre.textContent = raw;
+    card.appendChild(header);
+    card.appendChild(pre);
+    llmOutput.appendChild(card);
+    return;
+  }
+  const dict = I18N[currentLang];
+  const data = parsed.json || {};
+  const rest = parsed.rest || '';
+
+  const panel = document.createElement('div');
+  panel.className = 'llm-panel';
+
+  const summaryCard = document.createElement('div');
+  summaryCard.className = 'llm-card';
+  const summaryHeader = document.createElement('div');
+  summaryHeader.className = 'llm-card-header llm-card-header-row';
+  const title = document.createElement('div');
+  title.className = 'llm-card-title';
+  title.textContent = currentLang === 'zh' ? '模型结论' : 'Summary';
+  summaryHeader.appendChild(title);
+
+  const safe = String(data.safe || '').trim();
+  if (safe) {
+    const pill = document.createElement('span');
+    pill.className = `llm-pill ${safe === '不要' ? 'llm-pill--danger' : safe === '谨慎' ? 'llm-pill--warn' : 'llm-pill--ok'}`;
+    pill.textContent = safe;
+    summaryHeader.appendChild(pill);
+  }
+
+  summaryCard.appendChild(summaryHeader);
+
+  const summaryText = document.createElement('div');
+  summaryText.className = 'llm-kv';
+  const summaryLabel = document.createElement('div');
+  summaryLabel.className = 'llm-k';
+  summaryLabel.textContent = currentLang === 'zh' ? '一句话' : 'One line';
+  const summaryValue = document.createElement('div');
+  summaryValue.className = 'llm-v';
+  summaryValue.textContent = String(data.summary || '').trim() || (dict.na || 'n/a');
+  summaryText.appendChild(summaryLabel);
+  summaryText.appendChild(summaryValue);
+  summaryCard.appendChild(summaryText);
+
+  const writes = Array.isArray(data.writes) ? data.writes.filter(Boolean).map(String) : [];
+  const deletes = Array.isArray(data.deletes) ? data.deletes.filter(Boolean).map(String) : [];
+  const reads = Array.isArray(data.reads) ? data.reads.filter(Boolean).map(String) : [];
+
+  const impact = document.createElement('div');
+  impact.className = 'llm-impact';
+
+  const makeTagGroup = (label, items) => {
+    const group = document.createElement('div');
+    group.className = 'llm-tag-group';
+    const k = document.createElement('div');
+    k.className = 'llm-tag-k';
+    k.textContent = label;
+    group.appendChild(k);
+    const list = document.createElement('div');
+    list.className = 'llm-tags';
+    if (!items.length) {
+      const empty = document.createElement('span');
+      empty.className = 'llm-tag llm-tag--muted';
+      empty.textContent = dict.na || 'n/a';
+      list.appendChild(empty);
+    } else {
+      items.slice(0, 8).forEach((item) => {
+        const tag = document.createElement('span');
+        tag.className = 'llm-tag';
+        tag.textContent = item;
+        list.appendChild(tag);
+      });
+    }
+    group.appendChild(list);
+    return group;
+  };
+
+  impact.appendChild(makeTagGroup(currentLang === 'zh' ? '会写' : 'Writes', writes));
+  impact.appendChild(makeTagGroup(currentLang === 'zh' ? '会删' : 'Deletes', deletes));
+  impact.appendChild(makeTagGroup(currentLang === 'zh' ? '只读' : 'Reads', reads));
+  summaryCard.appendChild(impact);
+
+  const netRow = document.createElement('div');
+  netRow.className = 'llm-meta-row';
+  const network = String(data.network || '').trim();
+  const bigDownload = data.big_download;
+  const netPill = document.createElement('span');
+  netPill.className = 'llm-pill llm-pill--muted';
+  netPill.textContent =
+    (currentLang === 'zh' ? '网络：' : 'Network: ') + (network || (dict.na || 'n/a'));
+  netRow.appendChild(netPill);
+  if (typeof bigDownload !== 'undefined') {
+    const dlPill = document.createElement('span');
+    dlPill.className = 'llm-pill llm-pill--muted';
+    dlPill.textContent = (currentLang === 'zh' ? '大下载：' : 'Big download: ') + String(bigDownload);
+    netRow.appendChild(dlPill);
+  }
+  summaryCard.appendChild(netRow);
+
+  const why = Array.isArray(data.why) ? data.why.filter(Boolean).map(String) : [];
+  const precheck = Array.isArray(data.precheck) ? data.precheck.filter(Boolean).map(String) : [];
+
+  if (why.length) {
+    const whyBlock = document.createElement('div');
+    whyBlock.className = 'llm-list';
+    const header = document.createElement('div');
+    header.className = 'llm-subtitle';
+    header.textContent = currentLang === 'zh' ? '原因' : 'Why';
+    whyBlock.appendChild(header);
+    const ul = document.createElement('ul');
+    ul.className = 'llm-ul';
+    why.slice(0, 4).forEach((item) => {
+      const li = document.createElement('li');
+      li.textContent = item;
+      ul.appendChild(li);
+    });
+    whyBlock.appendChild(ul);
+    summaryCard.appendChild(whyBlock);
+  }
+
+  if (precheck.length) {
+    const precheckBlock = document.createElement('div');
+    precheckBlock.className = 'llm-list';
+    const header = document.createElement('div');
+    header.className = 'llm-subtitle';
+    header.textContent = currentLang === 'zh' ? '执行前检查' : 'Precheck';
+    precheckBlock.appendChild(header);
+    const ul = document.createElement('ul');
+    ul.className = 'llm-ul';
+    precheck.slice(0, 4).forEach((item) => {
+      const li = document.createElement('li');
+      li.textContent = item;
+      ul.appendChild(li);
+    });
+    precheckBlock.appendChild(ul);
+    summaryCard.appendChild(precheckBlock);
+  }
+
+  panel.appendChild(summaryCard);
+
+  const identityDetails = document.createElement('details');
+  identityDetails.className = 'llm-details';
+  const identitySummary = document.createElement('summary');
+  identitySummary.className = 'llm-details-summary';
+  identitySummary.textContent = currentLang === 'zh' ? '命令身份信息（JSON）' : 'Command identity (JSON)';
+  const identityPre = document.createElement('pre');
+  identityPre.className = 'llm-pre';
+  identityPre.textContent = JSON.stringify(data, null, 2);
+  identityDetails.appendChild(identitySummary);
+  identityDetails.appendChild(identityPre);
+  panel.appendChild(identityDetails);
+
+  if (rest) {
+    const rawDetails = document.createElement('details');
+    rawDetails.className = 'llm-details';
+    const rawSummary = document.createElement('summary');
+    rawSummary.className = 'llm-details-summary';
+    rawSummary.textContent = currentLang === 'zh' ? '原始输出' : 'Raw output';
+    const pre = document.createElement('pre');
+    pre.className = 'llm-pre';
+    pre.textContent = rest;
+    rawDetails.appendChild(rawSummary);
+    rawDetails.appendChild(pre);
+    panel.appendChild(rawDetails);
+  }
+
+  llmOutput.appendChild(panel);
 }
 
 function renderBlocks(blockList) {
@@ -734,6 +1021,66 @@ function collectModelFormValues() {
     proxyPort,
   };
 }
+
+modelProviderSelect.addEventListener('change', async () => {
+  const values = collectModelFormValues();
+  const config = getCurrentModelConfig();
+  if (!config) {
+    return;
+  }
+  config.providerId = values.providerId;
+  if (!values.baseUrl) {
+    config.baseUrl = getDefaultBaseUrl(values.providerId);
+    modelBaseUrlInput.value = config.baseUrl;
+  }
+  saveModelState();
+  await refreshModelsForCurrentForm();
+});
+
+modelBaseUrlInput.addEventListener('change', async () => {
+  const config = getCurrentModelConfig();
+  if (!config) {
+    return;
+  }
+  config.baseUrl = modelBaseUrlInput.value.trim();
+  saveModelState();
+  await refreshModelsForCurrentForm();
+});
+
+modelApiKeyInput.addEventListener('change', async () => {
+  const config = getCurrentModelConfig();
+  if (!config) {
+    return;
+  }
+  config.apiKey = modelApiKeyInput.value.trim();
+  saveModelState();
+  await refreshModelsForCurrentForm();
+});
+
+modelProxyEnabledInput.addEventListener('change', async () => {
+  const config = getCurrentModelConfig();
+  if (!config) {
+    return;
+  }
+  config.proxyEnabled = Boolean(modelProxyEnabledInput.checked);
+  saveModelState();
+  await refreshModelsForCurrentForm();
+});
+
+modelProxyPortInput.addEventListener('change', async () => {
+  const config = getCurrentModelConfig();
+  if (!config) {
+    return;
+  }
+  config.proxyPort = modelProxyPortInput.value.trim();
+  saveModelState();
+  await refreshModelsForCurrentForm();
+});
+
+btnModelRefresh.addEventListener('click', async () => {
+  modelOptionsCache = {};
+  await refreshModelsForCurrentForm();
+});
 
 btnAnalyze.addEventListener('click', () => {
   analyzeText(inputText.value, { source: 'manual' });

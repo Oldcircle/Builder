@@ -92,6 +92,78 @@ async function cropToDataUrl(rect) {
   return canvas.toDataURL('image/png');
 }
 
+async function createEnhancedDataUrl(dataUrl, options = {}) {
+  const image = new Image();
+  image.src = dataUrl;
+  await new Promise((resolve, reject) => {
+    image.onload = resolve;
+    image.onerror = reject;
+  });
+
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width || 1;
+  canvas.height = image.height || 1;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(image, 0, 0);
+
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imageData.data;
+  let min = 255;
+  let max = 0;
+  let count = 0;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const a = data[i + 3];
+    if (a < 16) {
+      continue;
+    }
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if (lum < min) {
+      min = lum;
+    }
+    if (lum > max) {
+      max = lum;
+    }
+    count += 1;
+  }
+
+  if (!count) {
+    return dataUrl;
+  }
+
+  const range = Math.max(1, max - min);
+  const gamma = range < 64 ? 0.85 : 1;
+  const invert = Boolean(options.invert);
+
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let norm = (lum - min) / range;
+    if (norm < 0) {
+      norm = 0;
+    }
+    if (norm > 1) {
+      norm = 1;
+    }
+    let adj = Math.pow(norm, gamma) * 255;
+    if (invert) {
+      adj = 255 - adj;
+    }
+    const v = Math.round(adj);
+    data[i] = v;
+    data[i + 1] = v;
+    data[i + 2] = v;
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
 document.addEventListener('mousedown', (event) => {
   startPoint = { x: event.clientX, y: event.clientY };
   selection.style.display = 'block';
@@ -130,8 +202,17 @@ document.addEventListener('mouseup', async (event) => {
 
   try {
     const dataUrl = await cropToDataUrl(rect);
+    const enhanced = await createEnhancedDataUrl(dataUrl, { invert: false });
+    const enhancedInverted = await createEnhancedDataUrl(dataUrl, { invert: true });
+    const variants = [];
+    if (enhanced && enhanced !== dataUrl) {
+      variants.push(enhanced);
+    }
+    if (enhancedInverted && enhancedInverted !== dataUrl && enhancedInverted !== enhanced) {
+      variants.push(enhancedInverted);
+    }
     const lang = await getOcrLanguage();
-    const result = await window.builderCapture.ocrImage({ dataUrl, lang });
+    const result = await window.builderCapture.ocrImage({ dataUrl, lang, variants });
     window.builderCapture.sendOcrResult(result);
   } catch (error) {
     window.builderCapture.sendOcrResult({

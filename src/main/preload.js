@@ -38,6 +38,7 @@ contextBridge.exposeInMainWorld('builder', {
   readClipboardText: () => ipcRenderer.invoke('read-clipboard'),
   llmExplain: (text, modelConfig, lang) =>
     ipcRenderer.invoke('llm-explain', { text, modelConfig, lang }),
+  listModels: (modelConfig) => ipcRenderer.invoke('list-models', { modelConfig }),
   onHotkeyText: (callback) =>
     ipcRenderer.on('hotkey-text', (_, payload) => callback(payload)),
   onOcrText: (callback) =>

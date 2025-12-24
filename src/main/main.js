@@ -100,7 +100,7 @@ function createMainWindow() {
     },
   });
 
-  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+  mainWindow.loadFile(path.join(__dirname, '../renderer/legacy/index.html'));
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   mainWindow.webContents.on('will-navigate', (event) => {
     event.preventDefault();
@@ -411,9 +411,11 @@ ipcMain.handle('desktop-capture-source', async (_, payload) => {
 });
 
 ipcMain.handle('ocr-image', async (_, payload) => {
-  const dataUrl = payload && typeof payload === 'object' ? payload.dataUrl : payload;
-  const lang = payload && typeof payload === 'object' ? payload.lang : undefined;
-  return recognizeImage(dataUrl, { lang });
+  const options = payload && typeof payload === 'object' ? payload : {};
+  const dataUrl = options && Object.prototype.hasOwnProperty.call(options, 'dataUrl') ? options.dataUrl : payload;
+  const lang = options ? options.lang : undefined;
+  const variants = options ? options.variants : undefined;
+  return recognizeImage(dataUrl, { lang, variants });
 });
 
 ipcMain.handle('read-clipboard', () => {
@@ -469,6 +471,9 @@ function httpRequestWithProxy(targetUrl, options, proxyAgent) {
         });
       });
       req.on('error', (err) => reject(err));
+      req.setTimeout(20000, () => {
+        req.destroy(new Error('Request timeout after 20s'));
+      });
       if (options && options.body) {
         req.write(options.body);
       }
@@ -477,6 +482,87 @@ function httpRequestWithProxy(targetUrl, options, proxyAgent) {
       reject(err);
     }
   });
+}
+
+async function listAvailableModels({ modelConfig }) {
+  const cfg = modelConfig && typeof modelConfig === 'object' ? modelConfig : {};
+  const providerId = String(cfg.providerId || 'openai');
+  const baseUrl = normalizeBaseUrl(cfg.baseUrl || '');
+  const explicitKey = String(cfg.apiKey || '').trim();
+  const proxyEnabled = Boolean(cfg.proxyEnabled);
+  const proxyPort = Number(cfg.proxyPort || 0);
+
+  const envKeyName = getEnvKeyForProvider(providerId);
+  const apiKey = explicitKey || (envKeyName ? process.env[envKeyName] : '') || '';
+
+  const proxyUrl = proxyEnabled && proxyPort > 0 ? `http://127.0.0.1:${proxyPort}` : '';
+  const proxyAgent = proxyUrl ? new HttpsProxyAgent(proxyUrl) : null;
+
+  if (!baseUrl) {
+    return { ok: false, error: 'Missing base URL' };
+  }
+  if (providerId === 'azure') {
+    return { ok: false, error: 'Azure OpenAI model listing is not wired yet.' };
+  }
+  if (providerId !== 'ollama' && !apiKey) {
+    return { ok: false, error: `Missing API key (${envKeyName || 'unknown env var'})` };
+  }
+
+  let url = '';
+  let headers = {};
+
+  if (providerId === 'anthropic') {
+    url = `${baseUrl}/models`;
+    headers = {
+      'content-type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    };
+  } else if (providerId === 'gemini') {
+    url = `${baseUrl}/models?key=${encodeURIComponent(apiKey)}`;
+  } else {
+    url = `${baseUrl}/models`;
+    headers = { 'content-type': 'application/json' };
+    if (providerId !== 'ollama') {
+      headers.authorization = `Bearer ${apiKey}`;
+    }
+  }
+
+  try {
+    const resp = await httpRequestWithProxy(url, { method: 'GET', headers }, proxyAgent);
+    const textBody = resp.body;
+    let json = null;
+    try {
+      json = JSON.parse(textBody);
+    } catch (e) {
+      json = null;
+    }
+    if (!resp.ok) {
+      const serverError =
+        json && json.error ? JSON.stringify(json.error) : textBody.slice(0, 500) || `HTTP ${resp.status}`;
+      return { ok: false, error: `HTTP ${resp.status}; ${serverError}` };
+    }
+
+    let ids = [];
+    if (providerId === 'gemini') {
+      const models = Array.isArray(json && json.models) ? json.models : [];
+      ids = models
+        .map((m) => (m && m.name ? String(m.name) : ''))
+        .filter(Boolean)
+        .map((name) => (name.startsWith('models/') ? name.slice('models/'.length) : name));
+    } else {
+      const data = Array.isArray(json && json.data) ? json.data : Array.isArray(json && json.models) ? json.models : [];
+      ids = data
+        .map((m) => (m && (m.id || m.name) ? String(m.id || m.name) : ''))
+        .filter(Boolean);
+    }
+
+    ids = Array.from(new Set(ids)).sort((a, b) => a.localeCompare(b));
+    return { ok: true, models: ids };
+  } catch (e) {
+    const message = e && e.message ? e.message : String(e);
+    return { ok: false, error: `Network error: ${message}` };
+  }
 }
 
 async function llmExplain({ text, modelConfig, lang }) {
@@ -495,6 +581,34 @@ async function llmExplain({ text, modelConfig, lang }) {
 
   const uiLang = lang === 'zh' ? 'zh' : 'en';
   const isZh = uiLang === 'zh';
+  const promptTemplate = `你是“命令作用与风险判定助手”。我会粘贴一条终端命令。
+请按以下格式输出，要求：内容精简、速度优先、每块最多 4 条要点。
+
+【先输出一段合法 JSON（不要代码块/不要多余文字）】字段固定：
+{
+  "summary": "一句话目的（具体到目录/对象/动作）",
+  "writes": ["会写/改的文件或目录（不确定用 '可能:' 前缀）"],
+  "deletes": ["会删的文件或目录（不确定用 '可能:' 前缀）"],
+  "reads": ["主要读取的文件或目录（可省略或留空数组）"],
+  "network": "none|maybe|yes",
+  "big_download": true|false|"maybe",
+  "safe": "可以|谨慎|不要",
+  "why": ["1-3条理由（必须与命令内容直接相关）"],
+  "precheck": ["执行前必须检查的1-3条命令"]
+}
+
+【然后输出 4 块人类可读摘要（每块<=4条）】
+A) 一句话：…
+B) 影响：【会写】…【会删】…【只读】…
+C) 联网与下载：…
+D) 无脑执行吗：…（并列出 precheck）
+
+规则（必须遵守）：
+- 不确定就写“可能/取决于脚本”，不要编造路径。
+- 出现 rm -rf / sudo / 覆盖重定向 > / docker system prune / curl|sh 时，safe 必须是“不要”。
+
+命令如下：
+`;
 
   const envKeyName = getEnvKeyForProvider(providerId);
   const apiKey = explicitKey || (envKeyName ? process.env[envKeyName] : '') || '';
@@ -541,9 +655,7 @@ async function llmExplain({ text, modelConfig, lang }) {
     if (providerId === 'anthropic') {
       const url = `${baseUrl}/messages`;
       try {
-        const anthropicPrompt = isZh
-          ? '你是一名命令安全助手。请用简体中文解释这个命令，指出潜在风险，并给出更安全的替代方案，回答尽量简洁。\n\n'
-          : 'You are a command safety assistant. Explain the command, list risks, and propose safer alternatives. Respond in English and keep it concise.\n\n';
+        const anthropicPrompt = promptTemplate;
         const options = {
           method: 'POST',
           headers: {
@@ -553,7 +665,7 @@ async function llmExplain({ text, modelConfig, lang }) {
           },
           body: JSON.stringify({
             model: modelName || 'claude-3-5-sonnet-latest',
-            max_tokens: 700,
+            max_tokens: 320,
             messages: [{ role: 'user', content: anthropicPrompt + input }],
           }),
           };
@@ -586,15 +698,13 @@ async function llmExplain({ text, modelConfig, lang }) {
       const model = modelName || 'gemini-1.5-flash';
       const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
       try {
-        const geminiPrompt = isZh
-          ? '你是一名命令安全助手。请用简体中文解释这个命令，指出潜在风险，并给出更安全的替代方案，回答尽量简洁。\n\n'
-          : 'You are a command safety assistant. Explain the command, list risks, and propose safer alternatives. Respond in English and keep it concise.\n\n';
+        const geminiPrompt = promptTemplate;
         const options = {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             contents: [{ role: 'user', parts: [{ text: geminiPrompt + input }] }],
-            generationConfig: { temperature: 0.2, maxOutputTokens: 700 },
+            generationConfig: { temperature: 0.2, maxOutputTokens: 320 },
           }),
         };
         const resp = await httpRequestWithProxy(url, options, proxyAgent);
@@ -634,22 +744,79 @@ async function llmExplain({ text, modelConfig, lang }) {
     }
 
     try {
+      const systemPrompt = promptTemplate;
+      const effectiveModel = modelName || 'gpt-4o-mini';
+      if (providerId === 'openai' && /^gpt-5/i.test(effectiveModel)) {
+        const responsesUrl = `${baseUrl}/responses`;
+        const options = {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            model: effectiveModel,
+            input: `${systemPrompt}\n${input}`,
+            max_output_tokens: 320,
+            text: { verbosity: 'low' },
+          }),
+        };
+
+        const resp = await httpRequestWithProxy(responsesUrl, options, proxyAgent);
+        const textBody = resp.body;
+        let json = null;
+        try {
+          json = JSON.parse(textBody);
+        } catch (e) {
+          json = null;
+        }
+        if (!resp.ok) {
+          const serverError =
+            json && json.error ? JSON.stringify(json.error) : textBody.slice(0, 500) || `HTTP ${resp.status}`;
+          return { ok: false, error: buildError(`HTTP ${resp.status}; ${serverError}`) };
+        }
+        if (json && typeof json.output_text === 'string') {
+          return { ok: true, text: json.output_text };
+        }
+        const output = Array.isArray(json && json.output) ? json.output : [];
+        const chunks = [];
+        output.forEach((item) => {
+          const content = Array.isArray(item && item.content) ? item.content : [];
+          content.forEach((c) => {
+            if (!c) {
+              return;
+            }
+            if (c.type === 'output_text' && typeof c.text === 'string') {
+              chunks.push(c.text);
+            }
+            if (c.type === 'text' && typeof c.text === 'string') {
+              chunks.push(c.text);
+            }
+          });
+        });
+        return { ok: true, text: chunks.join('').trim() };
+      }
+
+      const useMaxCompletionTokens =
+        providerId === 'openai' && (/^o\d/i.test(effectiveModel) || /^o-/i.test(effectiveModel));
+      const payload = {
+        model: effectiveModel,
+        temperature: 0.2,
+        messages: [
+          {
+            role: 'system',
+            content: systemPrompt,
+          },
+          { role: 'user', content: input },
+        ],
+      };
+      if (useMaxCompletionTokens) {
+        payload.max_completion_tokens = 320;
+      } else {
+        payload.max_tokens = 320;
+      }
       const options = {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          model: modelName || 'gpt-4o-mini',
-          temperature: 0.2,
-          max_tokens: 700,
-          messages: [
-            {
-              role: 'system',
-              content: isZh
-                ? '你是一名命令安全助手。请用简体中文解释这个命令，指出潜在风险，并给出更安全的替代方案，回答尽量简洁。'
-                : 'You are a command safety assistant. Explain the command, list risks, and propose safer alternatives. Respond in English and keep it concise.',
-            },
-            { role: 'user', content: input },
-          ],
+          ...payload,
         }),
       };
       const resp = await httpRequestWithProxy(url, options, proxyAgent);
@@ -690,6 +857,14 @@ ipcMain.handle('llm-explain', async (_, payload) => {
     return await llmExplain(payload || {});
   } catch (e) {
     return { ok: false, error: e && e.message ? e.message : 'LLM call failed' };
+  }
+});
+
+ipcMain.handle('list-models', async (_, payload) => {
+  try {
+    return await listAvailableModels(payload || {});
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : 'List models failed' };
   }
 });
 
