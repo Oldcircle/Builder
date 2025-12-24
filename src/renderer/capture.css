@@ -1,0 +1,35 @@
+﻿html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  background: rgba(5, 7, 9, 0.35);
+  font-family: "Trebuchet MS", "Gill Sans", "Verdana", sans-serif;
+  color: #f4f7fa;
+}
+
+#overlay {
+  position: fixed;
+  inset: 0;
+}
+
+#hint {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.6);
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  letter-spacing: 0.2px;
+}
+
+#selection {
+  position: absolute;
+  border: 2px solid #f2c94c;
+  background: rgba(242, 201, 76, 0.2);
+  box-shadow: 0 0 20px rgba(242, 201, 76, 0.35);
+  display: none;
+}

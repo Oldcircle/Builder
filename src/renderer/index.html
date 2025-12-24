@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'"
+    />
+    <title>Builder</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="titlebar" id="titlebar">
+        <div class="brand">
+          <div class="orb"></div>
+          <div>
+            <div class="title" data-i18n="appTitle">Builder</div>
+            <div class="subtitle" data-i18n="appSubtitle">Command Safety Lens</div>
+          </div>
+        </div>
+        <div class="actions" data-no-drag>
+          <button id="btnHelp" class="ghost tiny" data-i18n="help">Help</button>
+          <button id="btnModels" class="ghost tiny" data-i18n="modelButton">Models</button>
+          <button id="btnLang" class="ghost tiny" data-i18n="langToggle">中文</button>
+          <button id="btnCollapse" class="ghost" data-i18n="collapse">Collapse</button>
+        </div>
+      </header>
+
+      <main class="content">
+        <section class="panel input-panel">
+          <div class="panel-header">
+            <h2 data-i18n="inputTitle">Input</h2>
+            <div class="chips">
+              <span class="chip">Ctrl/Cmd+Shift+V</span>
+              <span class="chip">Ctrl/Cmd+Shift+S</span>
+              <span class="chip">Ctrl/Cmd+Shift+A</span>
+            </div>
+          </div>
+          <textarea id="inputText" data-i18n-placeholder="inputPlaceholder" placeholder="Paste or capture a command block..."></textarea>
+          <div class="row">
+            <button id="btnAnalyze" class="primary" data-i18n="analyze">Analyze</button>
+            <button id="btnClear" class="ghost" data-i18n="clear">Clear</button>
+            <button id="btnCapture" class="ghost" data-i18n="ocrCapture">OCR Capture</button>
+            <button id="btnActive" class="ghost" data-i18n="activeApp">Active App</button>
+          </div>
+          <div class="hint" data-i18n="hint">All analysis runs locally. OCR uses Tesseract.js.</div>
+        </section>
+
+        <section class="panel summary-panel">
+          <div class="panel-header">
+            <h2 data-i18n="summaryTitle">Summary</h2>
+            <span id="riskBadge" class="risk" data-level="none">none</span>
+          </div>
+          <div class="summary-grid">
+            <div>
+              <div class="label" data-i18n="shellLabel">Shell</div>
+              <div id="shellValue" class="value">unknown</div>
+            </div>
+            <div>
+              <div class="label" data-i18n="sourceLabel">Source</div>
+              <div id="sourceValue" class="value">manual</div>
+            </div>
+            <div>
+              <div class="label" data-i18n="ocrLabel">OCR confidence</div>
+              <div id="ocrValue" class="value">n/a</div>
+            </div>
+          </div>
+          <div id="warnings" class="warnings"></div>
+        </section>
+
+        <section class="panel llm-panel">
+          <div class="panel-header">
+            <h2 data-i18n="llmTitle">AI Explanation</h2>
+          </div>
+          <div id="llmOutput" class="llm-output"></div>
+        </section>
+
+        <section class="panel blocks-panel">
+          <div class="panel-header">
+            <h2 data-i18n="blocksTitle">Command Blocks</h2>
+          </div>
+          <div id="blocks" class="block-list"></div>
+        </section>
+
+        <section class="panel rules-panel">
+          <div class="panel-header">
+            <h2 data-i18n="rulesTitle">Rule Hits</h2>
+          </div>
+          <div id="rules" class="rule-list"></div>
+        </section>
+      </main>
+    </div>
+
+    <div id="collapsedShell" class="collapsed-shell">
+      <div class="collapsed-orb">
+        <div class="collapsed-letter">B</div>
+        <button
+          id="btnExpand"
+          class="collapsed-action"
+          data-i18n-title="expand"
+          title="Expand"
+        >
+          +
+        </button>
+      </div>
+    </div>
+
+    <div id="manualCapture" class="modal hidden">
+      <div class="modal-card">
+        <div class="modal-header" data-i18n="manualHeader">Active App Capture</div>
+        <div class="modal-text" data-i18n="manualText">
+          Selection capture from other apps is not wired yet. Paste the command
+          block here instead.
+        </div>
+        <textarea
+          id="manualInput"
+          data-i18n-placeholder="manualPlaceholder"
+          placeholder="Paste the command block..."
+        ></textarea>
+        <div class="row">
+          <button id="btnManualPaste" class="ghost" data-i18n="manualPaste">Paste Clipboard</button>
+          <button id="btnManualAnalyze" class="primary" data-i18n="analyze">Analyze</button>
+          <button id="btnManualCancel" class="ghost" data-i18n="cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="modelModal" class="modal hidden">
+      <div class="modal-card model-card">
+        <div class="modal-header" data-i18n="modelHeader">Model Settings</div>
+        <div class="model-layout">
+          <div class="model-list-pane">
+            <div class="model-list-header">
+              <div class="label" data-i18n="modelListLabel">Configurations</div>
+              <button id="btnModelAdd" class="ghost tiny" data-i18n="modelAdd">New</button>
+            </div>
+            <div id="modelList" class="model-list"></div>
+          </div>
+          <div class="model-form-pane">
+            <div class="form-group">
+              <div class="label" data-i18n="modelNameLabel">Config name</div>
+              <input id="modelNameInput" type="text" />
+            </div>
+            <div class="form-group">
+              <div class="label" data-i18n="modelProviderLabel">Provider</div>
+              <select id="modelProviderSelect">
+                <option value="openai">OpenAI (GPT)</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="anthropic">Anthropic (Claude)</option>
+                <option value="gemini">Google Gemini</option>
+                <option value="azure">Azure OpenAI</option>
+                <option value="ollama">Ollama (local)</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="moonshot">Moonshot (Kimi)</option>
+                <option value="zhipu">Zhipu / GLM</option>
+                <option value="perplexity">Perplexity</option>
+                <option value="custom">Custom / OpenAI compatible</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <div class="label" data-i18n="modelApiKeyLabel">API key</div>
+              <input
+                id="modelApiKeyInput"
+                type="password"
+                data-i18n-placeholder="modelApiKeyHint"
+                placeholder="Leave empty to use default environment variables if configured."
+              />
+            </div>
+            <div class="form-group">
+              <div class="label" data-i18n="modelBaseUrlLabel">API base URL</div>
+              <input
+                id="modelBaseUrlInput"
+                type="text"
+                data-i18n-placeholder="modelBaseUrlPlaceholder"
+                placeholder="https://api.example.com/v1"
+              />
+            </div>
+            <div class="form-group">
+              <div class="label" data-i18n="modelModelNameLabel">Model name</div>
+              <input id="modelModelNameInput" type="text" />
+            </div>
+            <div class="form-group">
+              <div class="label" data-i18n="modelProxyHeader">Proxy (local)</div>
+              <label class="checkbox-row">
+                <input id="modelProxyEnabled" type="checkbox" />
+                <span data-i18n="modelProxyToggle">Use HTTP proxy on localhost</span>
+              </label>
+              <input
+                id="modelProxyPort"
+                type="number"
+                min="1"
+                max="65535"
+                placeholder="7890"
+                data-i18n-placeholder="modelProxyPortPlaceholder"
+              />
+            </div>
+          </div>
+        </div>
+        <div class="row">
+          <button id="btnModelSave" class="primary" data-i18n="modelSave">Save</button>
+          <button id="btnModelDelete" class="ghost" data-i18n="modelDelete">Delete</button>
+          <button id="btnModelClose" class="ghost" data-i18n="modelClose">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="helpModal" class="modal hidden">
+      <div class="modal-card help-card">
+        <div class="modal-header" data-i18n="helpHeader">Usage Guide</div>
+        <div class="modal-text" data-i18n="helpIntro">
+          Builder analyzes command text locally and highlights risky patterns.
+        </div>
+        <div class="help-list">
+          <div class="help-item" data-i18n="helpItemClipboard">
+            Use Ctrl/Cmd+Shift+V to analyze clipboard content.
+          </div>
+          <div class="help-item" data-i18n="helpItemOcr">
+            Use Ctrl/Cmd+Shift+S to capture a region, OCR, and analyze.
+          </div>
+          <div class="help-item" data-i18n="helpItemActive">
+            Use Ctrl/Cmd+Shift+A to paste commands from the active app.
+          </div>
+          <div class="help-item" data-i18n="helpItemCollapse">
+            Collapse to a floating ball from the top right, expand when needed.
+          </div>
+          <div class="help-item" data-i18n="helpItemPrivacy">
+            No uploads. Rules and parsing stay on your device.
+          </div>
+        </div>
+        <div class="row">
+          <button id="btnHelpClose" class="primary" data-i18n="helpClose">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
