@@ -31,9 +31,8 @@ jobs:
 
       - run: npm ci
 
-      - run: npm run dist -- --${{ matrix.platform }} ${{ matrix.extraArgs }}
+      - run: npm run dist -- --${{ matrix.platform }} ${{ matrix.extraArgs }} --publish never
 
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/**/*
-
