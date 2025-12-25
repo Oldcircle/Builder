@@ -30,6 +30,25 @@ const COLLAPSED_SIZE = { width: 96, height: 96 };
 let pendingStateWrite = null;
 let stateFilePath = null;
 
+function ensureTessdataPath() {
+  if (process.env.BUILDER_TESSDATA_PATH) {
+    return;
+  }
+  if (!app.isPackaged) {
+    return;
+  }
+  try {
+    const candidateDir = path.join(process.resourcesPath, 'tessdata');
+    const candidateFile = path.join(candidateDir, 'chi_sim.traineddata');
+    if (fs.existsSync(candidateFile)) {
+      process.env.BUILDER_TESSDATA_PATH = candidateDir;
+    }
+  } catch (e) {
+  }
+}
+
+ensureTessdataPath();
+
 function safeReadJson(filePath) {
   try {
     const raw = fs.readFileSync(filePath, 'utf8');

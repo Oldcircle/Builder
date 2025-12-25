@@ -6,15 +6,6 @@
 
 ---
 
-## 下载
-
-- Windows / macOS：进入 GitHub Releases 下载最新版安装包：`https://github.com/Oldcircle/Builder/releases`
-- 文件名大致为：
-  - Windows：`Builder Setup *.exe`
-  - macOS：`Builder-*.dmg`（或 `Builder-*.zip`）
-
----
-
 ### 特性一览
 
 - 悬浮窗常驻桌面，可收起为小浮球，随时唤出
@@ -50,6 +41,12 @@
 
 ## 快速开始
 
+### 下载与安装
+
+- GitHub Releases：`https://github.com/Oldcircle/Builder/releases`
+- Windows：下载 `Builder Setup *.exe` 安装包（或 `Builder-*-win.zip` 免安装版）
+- macOS：下载 `Builder-*.dmg`（或 `Builder-*-mac.zip`）
+
 ### 环境要求
 
 - Node.js（建议 ≥ 18）
@@ -61,7 +58,7 @@
 ### 安装与运行
 
 ```bash
-git clone git@github.com:Oldcircle/Builder.git builder
+git clone <your-repo-url> builder
 cd builder
 
 npm install

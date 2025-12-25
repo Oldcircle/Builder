@@ -1,6 +1,4 @@
 const { createWorker } = require('tesseract.js');
-const fs = require('fs');
-const path = require('path');
 
 let workerPromise = null;
 let workerLang = 'eng';
@@ -37,16 +35,7 @@ async function resetWorker() {
 
 async function getWorker(lang) {
   if (!workerPromise) {
-    let langPath = process.env.BUILDER_TESSDATA_PATH;
-    if (!langPath && typeof process.resourcesPath === 'string') {
-      const candidate = path.join(process.resourcesPath, 'tessdata');
-      try {
-        if (fs.existsSync(candidate)) {
-          langPath = candidate;
-        }
-      } catch (e) {
-      }
-    }
+    const langPath = process.env.BUILDER_TESSDATA_PATH;
     const targetLang = normalizeOcrLang(lang);
     workerPromise = createWorker(targetLang, 1, langPath ? { langPath } : {});
     workerLang = targetLang;
