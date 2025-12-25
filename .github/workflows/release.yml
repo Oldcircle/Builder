@@ -33,6 +33,25 @@ jobs:
 
       - run: npm run dist -- --${{ matrix.platform }} ${{ matrix.extraArgs }} --publish never
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.platform }}
+          if-no-files-found: error
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*-win.zip
+            dist/*-mac.zip
+            dist/*.blockmap
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-dist
+
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/**/*
+          files: release-dist/**/*
